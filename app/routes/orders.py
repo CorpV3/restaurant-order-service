@@ -335,6 +335,10 @@ async def update_order_status(
     # Update status
     order.status = status_update.status
 
+    # Save payment method when completing
+    if status_update.payment_method:
+        order.payment_method = status_update.payment_method
+
     # Set timestamps based on status
     if status_update.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
         order.completed_at = datetime.utcnow()

@@ -629,3 +629,94 @@ async def get_analytics_dashboard(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch analytics dashboard: {str(e)}"
         )
+
+
+# ============================================================================
+# 14. POS Reports (Daily / Weekly / Monthly)
+# ============================================================================
+
+@router.get(
+    "/restaurants/{restaurant_id}/analytics/reports",
+    summary="Get POS reports",
+    description="Daily, weekly, or monthly account close report with cash/card breakdown"
+)
+async def get_pos_reports(
+    restaurant_id: UUID,
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get POS account close report for a date range.
+
+    Returns completed table orders with cash/card payment breakdown.
+    """
+    try:
+        from sqlalchemy import func, cast
+        from sqlalchemy.dialects.postgresql import DATE as PG_DATE
+        from sqlalchemy.orm import selectinload
+        from ..models import Order, OrderItem
+        from shared.models.enums import OrderStatus
+
+        query = (
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(
+                Order.restaurant_id == restaurant_id,
+                Order.status == OrderStatus.COMPLETED,
+                func.date(Order.created_at) >= start_date,
+                func.date(Order.created_at) <= end_date,
+            )
+            .order_by(Order.created_at.desc())
+        )
+
+        result = await db.execute(query)
+        orders = result.scalars().all()
+
+        cash_orders = [o for o in orders if o.payment_method == 'cash']
+        card_orders = [o for o in orders if o.payment_method == 'card']
+        unknown_orders = [o for o in orders if o.payment_method not in ('cash', 'card')]
+
+        return {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "summary": {
+                "total_orders": len(orders),
+                "total_revenue": round(sum(o.total for o in orders), 2),
+                "cash_orders": len(cash_orders),
+                "cash_total": round(sum(o.total for o in cash_orders), 2),
+                "card_orders": len(card_orders),
+                "card_total": round(sum(o.total for o in card_orders), 2),
+                "unknown_orders": len(unknown_orders),
+                "unknown_total": round(sum(o.total for o in unknown_orders), 2),
+            },
+            "orders": [
+                {
+                    "id": str(o.id),
+                    "order_number": o.order_number,
+                    "table_id": str(o.table_id) if o.table_id else None,
+                    "created_at": o.created_at.isoformat(),
+                    "completed_at": o.completed_at.isoformat() if o.completed_at else None,
+                    "subtotal": round(o.subtotal, 2),
+                    "tax": round(o.tax, 2),
+                    "total": round(o.total, 2),
+                    "payment_method": o.payment_method,
+                    "items_count": len(o.items),
+                    "items": [
+                        {
+                            "name": i.item_name,
+                            "quantity": i.quantity,
+                            "price": round(float(i.item_price), 2),
+                        }
+                        for i in o.items
+                    ],
+                }
+                for o in orders
+            ],
+        }
+    except Exception as e:
+        logger.error(f"POS reports error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch report: {str(e)}"
+        )

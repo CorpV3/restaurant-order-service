@@ -43,6 +43,9 @@ class Order(Base):
     # Special instructions
     special_instructions = Column(Text, nullable=True)
 
+    # Payment
+    payment_method = Column(String(20), nullable=True)  # 'cash', 'card'
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -54,6 +54,7 @@ class OrderCreate(BaseModel):
 class OrderUpdateStatus(BaseModel):
     """Schema for updating order status"""
     status: OrderStatus
+    payment_method: Optional[str] = None  # 'cash', 'card'
 
 
 class OrderResponse(BaseModel):
@@ -73,6 +74,7 @@ class OrderResponse(BaseModel):
     tax: float
     total: float
     special_instructions: Optional[str] = None
+    payment_method: Optional[str] = None
     items: List[OrderItemResponse] = []
     created_at: datetime
     updated_at: datetime
