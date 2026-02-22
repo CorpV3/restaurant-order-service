@@ -20,11 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/ /app/shared/
 
 # Copy Alembic migration files
-COPY services/order-service/alembic.ini /app/
-COPY services/order-service/alembic /app/alembic
+COPY alembic.ini /app/
+COPY alembic/ /app/alembic/
 
 # Copy service code
-COPY services/order-service/app /app/app
+COPY app/ /app/app/
 
 # Expose port
 EXPOSE 8004

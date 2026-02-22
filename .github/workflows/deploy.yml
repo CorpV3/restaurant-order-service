@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  DOCKER_IMAGE: shadrach85/restaurant-order-service
+  DOCKER_IMAGE: shadrach85/order-service
   SERVICE_NAME: order-service
   VALUES_FILE: helm/restaurant-system/values-test.yaml
   VALUES_KEY: orderService
