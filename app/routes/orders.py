@@ -21,6 +21,7 @@ from ..schemas import (
 )
 from shared.models.enums import OrderStatus, OrderType
 from shared.utils.logger import setup_logger
+from ..websocket import manager
 
 router = APIRouter()
 logger = setup_logger("order-routes")
@@ -200,6 +201,27 @@ async def create_order(
     order_with_items = result.scalar_one()
 
     logger.info(f"Order created: {new_order.order_number}")
+
+    # Broadcast new order to POS dashboard via WebSocket
+    await manager.broadcast_to_restaurant(
+        {
+            "type": "new_order",
+            "order_id": str(order_with_items.id),
+            "order": {
+                "id": str(order_with_items.id),
+                "order_number": order_with_items.order_number,
+                "table_number": str(order_with_items.table_id) if order_with_items.table_id else None,
+                "status": order_with_items.status.value if hasattr(order_with_items.status, 'value') else order_with_items.status,
+                "total": float(order_with_items.total),
+                "created_at": order_with_items.created_at.isoformat(),
+                "items": [
+                    {"name": i.item_name, "quantity": i.quantity, "price": float(i.item_price)}
+                    for i in order_with_items.items
+                ],
+            }
+        },
+        str(order_with_items.restaurant_id)
+    )
 
     return order_with_items
 
