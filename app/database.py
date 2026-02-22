@@ -1,19 +1,25 @@
 """
 Database configuration for Order Service
 """
+import re
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from shared.config.settings import settings
 
+# Build asyncpg-compatible URL (strip sslmode which asyncpg doesn't support as URL param)
+_db_url = settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+_db_url = re.sub(r'[?&]sslmode=[^&]*', '', _db_url).rstrip('?')
+
 # Create async engine with increased pool for analytics queries
 engine = create_async_engine(
-    settings.database_url.replace("postgresql://", "postgresql+asyncpg://"),
+    _db_url,
     echo=True if settings.environment == "development" else False,
     future=True,
     pool_pre_ping=True,
     pool_size=15,        # Increased from 10 (laptop-adjusted, production: 20)
     max_overflow=25,     # Increased from 20 (laptop-adjusted, production: 30)
     pool_timeout=30,     # Connection timeout
+    connect_args={"ssl": False},
 )
 
 # Create async session factory
