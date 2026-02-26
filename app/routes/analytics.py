@@ -652,7 +652,7 @@ async def get_pos_reports(
     Returns completed table orders with cash/card payment breakdown.
     """
     try:
-        from sqlalchemy import func, cast
+        from sqlalchemy import func, cast, select
         from sqlalchemy.dialects.postgresql import DATE as PG_DATE
         from sqlalchemy.orm import selectinload
         from ..models import Order, OrderItem
@@ -700,6 +700,7 @@ async def get_pos_reports(
                     "subtotal": round(o.subtotal, 2),
                     "tax": round(o.tax, 2),
                     "total": round(o.total, 2),
+                    "total_amount": round(o.total, 2),
                     "payment_method": o.payment_method,
                     "items_count": len(o.items),
                     "items": [
