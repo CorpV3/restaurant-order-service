@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     make \
+    cmake \
+    libgomp1 \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 

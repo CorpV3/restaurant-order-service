@@ -7,3 +7,9 @@ pydantic-settings==2.1.0
 aio-pika==9.3.1
 python-multipart==0.0.6
 httpx==0.25.2
+# ML / Analytics dependencies
+pandas==2.1.4
+numpy==1.26.3
+prophet==1.1.6
+scikit-learn==1.4.0
+redis==5.0.1
