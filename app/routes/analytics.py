@@ -4,11 +4,16 @@ REST API endpoints for analytics and reporting
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
-from datetime import date, timedelta
+from sqlalchemy import select, func, text
+from typing import Optional, List, Dict, Any
+from datetime import date, timedelta, datetime
 from uuid import UUID
+import os
+import httpx
 
 from ..database import get_db
+
+RESTAURANT_SERVICE_URL = os.getenv("RESTAURANT_SERVICE_URL", "http://restaurant-service:8003")
 from ..analytics_schemas.analytics import (
     RevenueAnalyticsResponse,
     PopularItemsResponse,
@@ -720,4 +725,176 @@ async def get_pos_reports(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch report: {str(e)}"
+        )
+
+
+# ============================================================================
+# 15. Inventory-Aware Predictions (stock shortfall per day)
+# ============================================================================
+
+@router.get(
+    "/restaurants/{restaurant_id}/analytics/inventory-predictions",
+    summary="Stock-aware demand predictions",
+    description="Predict what menu items will be needed for each upcoming day and cross-reference with current inventory to show stock shortfalls"
+)
+async def get_inventory_predictions(
+    restaurant_id: UUID,
+    days_ahead: int = Query(7, ge=1, le=30),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Combines demand forecast with current inventory stock to show:
+    - How many of each item is predicted to be ordered each day
+    - What ingredients are needed (via recipes/BOM)
+    - What's currently in stock
+    - Shortfall: what needs to be purchased
+    """
+    try:
+        # 1. Get demand forecast from existing prediction service
+        from ..services import analytics_service
+        demand = await analytics_service.get_demand_predictions(db, restaurant_id, "1_week")
+
+        # 2. Fetch current inventory + recipes from restaurant-service
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            inv_resp = await client.get(f"{RESTAURANT_SERVICE_URL}/api/v1/restaurants/{restaurant_id}/inventory/items")
+            recipe_resp = await client.get(f"{RESTAURANT_SERVICE_URL}/api/v1/restaurants/{restaurant_id}/inventory/recipes")
+            alerts_resp = await client.get(f"{RESTAURANT_SERVICE_URL}/api/v1/restaurants/{restaurant_id}/inventory/alerts")
+
+        inventory = inv_resp.json() if inv_resp.status_code == 200 else []
+        recipes = recipe_resp.json() if recipe_resp.status_code == 200 else []
+        alerts = alerts_resp.json() if alerts_resp.status_code == 200 else {}
+
+        # Index inventory by id
+        inv_by_id = {i["id"]: i for i in inventory}
+
+        # Build recipe map: menu_item_id -> [{ inventory_item_id, quantity_required, unit, name }]
+        recipe_map: Dict[str, List[Dict]] = {}
+        for r in recipes:
+            mid = r["menu_item_id"]
+            iid = r["inventory_item_id"]
+            inv_item = inv_by_id.get(iid, {})
+            recipe_map.setdefault(mid, []).append({
+                "inventory_item_id": iid,
+                "inventory_item_name": inv_item.get("name", "Unknown"),
+                "quantity_required": r["quantity_required"],
+                "unit": r["unit"],
+                "current_stock": inv_item.get("quantity", 0),
+            })
+
+        # 3. Build day-by-day prediction with stock analysis
+        today = datetime.utcnow().date()
+        days_result = []
+
+        # Use day_patterns from order history for simple day-of-week scaling
+        day_patterns_raw = await analytics_service.get_day_patterns(db, restaurant_id)
+        day_patterns = {}
+        if hasattr(day_patterns_raw, "patterns"):
+            for p in day_patterns_raw.patterns:
+                day_patterns[p.get("day_of_week", p.get("day", ""))] = p.get("order_count", 1)
+
+        # Get popular items for base demand
+        popular_raw = await analytics_service.get_popular_items(db, restaurant_id, limit=20)
+        items_demand = []
+        if hasattr(popular_raw, "items"):
+            items_demand = popular_raw.items
+
+        # Build running stock depletion across the forecast window
+        running_stock = {iid: data["quantity"] for iid, data in inv_by_id.items()}
+
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        for offset in range(days_ahead):
+            forecast_date = today + timedelta(days=offset + 1)
+            weekday = day_names[forecast_date.weekday()]
+
+            # Scale factor from day patterns (default 1.0)
+            scale = day_patterns.get(weekday, day_patterns.get(str(forecast_date.weekday()), 1.0))
+            if isinstance(scale, (int, float)) and scale > 0:
+                max_scale = max(day_patterns.values()) if day_patterns else 1
+                scale = scale / max_scale if max_scale > 0 else 1.0
+
+            day_items = []
+            for item in items_demand:
+                item_name = item.get("item_name", item.get("name", ""))
+                menu_item_id = item.get("menu_item_id", item.get("id", ""))
+                avg_qty = item.get("avg_daily_quantity", item.get("total_quantity", 0))
+                if hasattr(avg_qty, "__float__"):
+                    avg_qty = float(avg_qty)
+
+                predicted_qty = round(float(avg_qty or 0) * scale)
+
+                # Check ingredients needed
+                ingredients_needed = []
+                can_make = predicted_qty  # how many we can make with current stock
+                for ing in recipe_map.get(str(menu_item_id), []):
+                    iid = ing["inventory_item_id"]
+                    total_needed = ing["quantity_required"] * predicted_qty
+                    available = running_stock.get(iid, 0)
+                    shortfall = max(0.0, round(total_needed - available, 2))
+                    possible_from_stock = int(available / ing["quantity_required"]) if ing["quantity_required"] > 0 else predicted_qty
+                    can_make = min(can_make, possible_from_stock)
+
+                    ingredients_needed.append({
+                        "ingredient_id": iid,
+                        "ingredient_name": ing["inventory_item_name"],
+                        "needed": round(total_needed, 2),
+                        "available": round(available, 2),
+                        "shortfall": shortfall,
+                        "unit": ing["unit"],
+                        "status": "ok" if shortfall == 0 else "low",
+                    })
+
+                day_items.append({
+                    "menu_item_id": str(menu_item_id),
+                    "menu_item_name": item_name,
+                    "predicted_quantity": predicted_qty,
+                    "can_make_from_stock": max(0, can_make),
+                    "shortfall_units": max(0, predicted_qty - can_make),
+                    "ingredients": ingredients_needed,
+                })
+
+            # Deplete running stock for next day calculations
+            for di in day_items:
+                for ing in di["ingredients"]:
+                    iid = ing["ingredient_id"]
+                    if iid in running_stock:
+                        running_stock[iid] = max(0.0, running_stock[iid] - ing["needed"])
+
+            days_result.append({
+                "date": forecast_date.isoformat(),
+                "day": weekday,
+                "items": day_items,
+            })
+
+        # 4. Aggregate total shortfalls across all days
+        total_shortfalls: Dict[str, Dict] = {}
+        for day in days_result:
+            for item in day["items"]:
+                for ing in item["ingredients"]:
+                    if ing["shortfall"] > 0:
+                        iid = ing["ingredient_id"]
+                        if iid not in total_shortfalls:
+                            total_shortfalls[iid] = {
+                                "ingredient_id": iid,
+                                "ingredient_name": ing["ingredient_name"],
+                                "total_shortfall": 0.0,
+                                "unit": ing["unit"],
+                            }
+                        total_shortfalls[iid]["total_shortfall"] = round(
+                            total_shortfalls[iid]["total_shortfall"] + ing["shortfall"], 2
+                        )
+
+        return {
+            "restaurant_id": str(restaurant_id),
+            "forecast_days": days_ahead,
+            "generated_at": datetime.utcnow().isoformat(),
+            "days": days_result,
+            "shopping_list": sorted(total_shortfalls.values(), key=lambda x: x["total_shortfall"], reverse=True),
+            "alerts": alerts,
+        }
+
+    except Exception as e:
+        logger.error(f"Inventory predictions error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate inventory predictions: {str(e)}"
         )
