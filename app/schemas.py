@@ -49,6 +49,15 @@ class OrderCreate(BaseModel):
     total: Optional[str] = None
     status: Optional[str] = None
     special_instructions: Optional[str] = None
+    discount_amount: Optional[float] = 0.0
+    discount_reason: Optional[str] = None
+
+
+class RefundRequest(BaseModel):
+    """Schema for processing a refund"""
+    refund_amount: float = Field(gt=0)
+    refund_method: str = Field(pattern="^(cash|card)$")
+    refund_reason: Optional[str] = None
 
 
 class OrderUpdateStatus(BaseModel):
@@ -72,9 +81,15 @@ class OrderResponse(BaseModel):
     delivery_address: Optional[str] = None
     subtotal: float
     tax: float
+    discount_amount: float = 0.0
+    discount_reason: Optional[str] = None
     total: float
     special_instructions: Optional[str] = None
     payment_method: Optional[str] = None
+    refund_amount: Optional[float] = None
+    refund_method: Optional[str] = None
+    refund_reason: Optional[str] = None
+    refunded_at: Optional[datetime] = None
     items: List[OrderItemResponse] = []
     created_at: datetime
     updated_at: datetime

@@ -17,6 +17,7 @@ from ..schemas import (
     OrderCreate,
     OrderResponse,
     OrderUpdateStatus,
+    RefundRequest,
     MessageResponse
 )
 from shared.models.enums import OrderStatus, OrderType
@@ -154,7 +155,8 @@ async def create_order(
 
     # Calculate tax (10%)
     tax = subtotal * 0.10
-    total = subtotal + tax
+    discount = float(order_data.discount_amount or 0.0)
+    total = max(0.0, subtotal + tax - discount)
 
     # Create order
     new_order = Order(
@@ -169,6 +171,8 @@ async def create_order(
         delivery_address=order_data.delivery_address,
         subtotal=subtotal,
         tax=tax,
+        discount_amount=discount,
+        discount_reason=order_data.discount_reason,
         total=total,
         special_instructions=order_data.special_instructions
     )
@@ -348,6 +352,42 @@ async def update_order_status(
 
     logger.info(f"Order {order.order_number} status updated to {status_update.status}")
 
+    return order
+
+
+@router.post("/orders/{order_id}/refund", response_model=OrderResponse)
+async def refund_order(
+    order_id: UUID,
+    refund_data: RefundRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Process a refund for a completed order."""
+    result = await db.execute(
+        select(Order)
+        .options(selectinload(Order.items))
+        .where(Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.refunded_at:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order already refunded")
+
+    if refund_data.refund_amount > order.total:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Refund amount exceeds order total ({order.total:.2f})")
+
+    order.refund_amount = refund_data.refund_amount
+    order.refund_method = refund_data.refund_method
+    order.refund_reason = refund_data.refund_reason
+    order.refunded_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(order)
+
+    logger.info(f"Order {order.order_number} refunded: {refund_data.refund_amount} via {refund_data.refund_method}")
     return order
 
 
