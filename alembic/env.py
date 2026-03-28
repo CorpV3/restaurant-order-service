@@ -35,11 +35,9 @@ def run_migrations_offline():
 
 
 def run_migrations_online():
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = get_url()
-
+    # Build config dict directly to avoid configparser %(key)s interpolation in alembic.ini
     connectable = engine_from_config(
-        configuration,
+        {"sqlalchemy.url": get_url()},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
