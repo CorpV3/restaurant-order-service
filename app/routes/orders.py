@@ -153,8 +153,8 @@ async def create_order(
             "special_instructions": item.special_requests
         })
 
-    # Calculate tax (10%)
-    tax = subtotal * 0.10
+    # Calculate tax (20% UK VAT)
+    tax = subtotal * 0.20
     discount = float(order_data.discount_amount or 0.0)
     total = max(0.0, subtotal + tax - discount)
 
