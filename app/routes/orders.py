@@ -336,21 +336,24 @@ async def update_order_status(
             detail="Order not found"
         )
 
-    # Update status
-    order.status = status_update.status
-
-    # Save payment method when completing
+    # Save payment method whenever provided
     if status_update.payment_method:
         order.payment_method = status_update.payment_method
 
-    # Set timestamps based on status
-    if status_update.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+    # Auto-complete: when marked served WITH a payment method, advance to completed
+    if status_update.status == OrderStatus.SERVED and status_update.payment_method:
+        order.status = OrderStatus.COMPLETED
         order.completed_at = datetime.utcnow()
+        logger.info(f"Order {order.order_number} auto-completed on payment ({status_update.payment_method})")
+    else:
+        order.status = status_update.status
+        if status_update.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+            order.completed_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(order)
 
-    logger.info(f"Order {order.order_number} status updated to {status_update.status}")
+    logger.info(f"Order {order.order_number} status updated to {order.status}")
 
     return order
 

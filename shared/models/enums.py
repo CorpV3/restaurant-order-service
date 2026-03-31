@@ -76,6 +76,7 @@ class PaymentStatus(str, Enum):
 
 
 class OrderType(str, Enum):
-    """Order channel type - table vs online"""
+    """Order channel type - table vs online vs takeaway"""
     TABLE = "table"      # In-restaurant table orders
     ONLINE = "online"    # Online delivery/pickup orders
+    TAKEAWAY = "takeaway"  # Walk-in takeaway (no table)
