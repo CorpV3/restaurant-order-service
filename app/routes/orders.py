@@ -56,8 +56,8 @@ async def fetch_menu_item(restaurant_id: UUID, menu_item_id: UUID) -> dict:
         return None
 
 
-async def fetch_restaurant_slug(restaurant_id: UUID) -> Optional[str]:
-    """Fetch restaurant slug from restaurant service"""
+async def fetch_restaurant(restaurant_id: UUID) -> Optional[dict]:
+    """Fetch restaurant details (slug, vat_enabled, vat_rate) from restaurant service"""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -65,14 +65,19 @@ async def fetch_restaurant_slug(restaurant_id: UUID) -> Optional[str]:
                 timeout=5.0
             )
             if response.status_code == 200:
-                data = response.json()
-                return data.get("slug")
+                return response.json()
             else:
                 logger.warning(f"Failed to fetch restaurant {restaurant_id}: {response.status_code}")
                 return None
     except Exception as e:
         logger.error(f"Error fetching restaurant {restaurant_id}: {e}")
         return None
+
+
+async def fetch_restaurant_slug(restaurant_id: UUID) -> Optional[str]:
+    """Fetch restaurant slug from restaurant service"""
+    data = await fetch_restaurant(restaurant_id)
+    return data.get("slug") if data else None
 
 
 async def lock_table(restaurant_id: UUID, table_id: UUID) -> bool:
@@ -124,6 +129,11 @@ async def create_order(
     Create a new order (PUBLIC - no authentication required)
     Customers can place orders directly via QR code or table session
     """
+    # Fetch restaurant VAT settings
+    restaurant_data = await fetch_restaurant(order_data.restaurant_id)
+    vat_enabled = restaurant_data.get("vat_enabled", True) if restaurant_data else True
+    vat_rate = float(restaurant_data.get("vat_rate", 20.0)) if restaurant_data else 20.0
+
     # Calculate order totals
     subtotal = 0.0
     order_items_data = []
@@ -150,11 +160,13 @@ async def create_order(
             "item_price": item_price,
             "item_image_url": item_image_url,
             "quantity": item.quantity,
-            "special_instructions": item.special_requests
+            "special_instructions": item.special_requests,
+            "is_deal_item": item.is_deal_item,
+            "deal_selections": [s.model_dump() for s in item.deal_selections] if item.deal_selections else None,
         })
 
-    # Calculate tax (20% UK VAT)
-    tax = subtotal * 0.20
+    # Calculate tax based on restaurant VAT setting
+    tax = subtotal * (vat_rate / 100) if vat_enabled else 0.0
     discount = float(order_data.discount_amount or 0.0)
     total = max(0.0, subtotal + tax - discount)
 

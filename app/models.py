@@ -85,6 +85,10 @@ class OrderItem(Base):
     # Order details
     quantity = Column(Integer, nullable=False, default=1)
 
+    # Deal / combo fields
+    is_deal_item = Column(Boolean, default=False, nullable=False)
+    deal_selections = Column(JSONB, nullable=True)  # chosen sub-items per step
+
     # Special instructions
     special_instructions = Column(Text, nullable=True)
 
