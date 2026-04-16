@@ -372,7 +372,13 @@ async def update_order_status(
     await db.commit()
     await db.refresh(order)
 
-    logger.info(f"Order {order.order_number} status updated to {order.status}")
+    # Unlock table when order is completed or cancelled
+    if status_update.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+        if order.table_id:
+            await unlock_table(order.restaurant_id, order.table_id)
+            logger.info(f"Table {order.table_id} unlocked after order {order.order_number} marked {status_update.status}")
+
+    logger.info(f"Order {order.order_number} status updated to {status_update.status}")
 
     return order
 
@@ -435,30 +441,15 @@ async def generate_receipt(
             detail="Order not found"
         )
 
-    # Only allow receipt generation for SERVED or COMPLETED orders
+    # Allow viewing bill for SERVED or COMPLETED orders
     if order.status not in [OrderStatus.SERVED, OrderStatus.COMPLETED]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot generate receipt for order with status: {order.status}. Order must be SERVED or COMPLETED."
+            detail=f"Cannot view bill for order with status: {order.status}. Order must be SERVED or COMPLETED."
         )
 
-    # Mark order as completed if it was just SERVED
-    if order.status == OrderStatus.SERVED:
-        order.status = OrderStatus.COMPLETED
-        order.completed_at = datetime.utcnow()
-
-    # Unlock the table when receipt is generated
-    if order.table_id:
-        table_unlocked = await unlock_table(order.restaurant_id, order.table_id)
-        if table_unlocked:
-            logger.info(f"Table {order.table_id} unlocked after receipt generated for order {order.order_number}")
-        else:
-            logger.warning(f"Failed to unlock table {order.table_id} for order {order.order_number}")
-
-    await db.commit()
-    await db.refresh(order)
-
-    logger.info(f"Receipt generated for order {order.order_number}")
+    # Do NOT change order status here — POS handles completion after collecting payment
+    logger.info(f"Bill viewed for order {order.order_number}")
 
     return order
 
