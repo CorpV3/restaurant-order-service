@@ -17,6 +17,7 @@ from ..schemas import (
     OrderCreate,
     OrderResponse,
     OrderUpdateStatus,
+    RefundRequest,
     MessageResponse
 )
 from shared.models.enums import OrderStatus, OrderType
@@ -55,8 +56,8 @@ async def fetch_menu_item(restaurant_id: UUID, menu_item_id: UUID) -> dict:
         return None
 
 
-async def fetch_restaurant_slug(restaurant_id: UUID) -> Optional[str]:
-    """Fetch restaurant slug from restaurant service"""
+async def fetch_restaurant(restaurant_id: UUID) -> Optional[dict]:
+    """Fetch restaurant details (slug, vat_enabled, vat_rate) from restaurant service"""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -64,14 +65,19 @@ async def fetch_restaurant_slug(restaurant_id: UUID) -> Optional[str]:
                 timeout=5.0
             )
             if response.status_code == 200:
-                data = response.json()
-                return data.get("slug")
+                return response.json()
             else:
                 logger.warning(f"Failed to fetch restaurant {restaurant_id}: {response.status_code}")
                 return None
     except Exception as e:
         logger.error(f"Error fetching restaurant {restaurant_id}: {e}")
         return None
+
+
+async def fetch_restaurant_slug(restaurant_id: UUID) -> Optional[str]:
+    """Fetch restaurant slug from restaurant service"""
+    data = await fetch_restaurant(restaurant_id)
+    return data.get("slug") if data else None
 
 
 async def lock_table(restaurant_id: UUID, table_id: UUID) -> bool:
@@ -123,6 +129,11 @@ async def create_order(
     Create a new order (PUBLIC - no authentication required)
     Customers can place orders directly via QR code or table session
     """
+    # Fetch restaurant VAT settings
+    restaurant_data = await fetch_restaurant(order_data.restaurant_id)
+    vat_enabled = restaurant_data.get("vat_enabled", True) if restaurant_data else True
+    vat_rate = float(restaurant_data.get("vat_rate", 20.0)) if restaurant_data else 20.0
+
     # Calculate order totals
     subtotal = 0.0
     order_items_data = []
@@ -149,12 +160,15 @@ async def create_order(
             "item_price": item_price,
             "item_image_url": item_image_url,
             "quantity": item.quantity,
-            "special_instructions": item.special_requests
+            "special_instructions": item.special_requests,
+            "is_deal_item": item.is_deal_item,
+            "deal_selections": [s.model_dump() for s in item.deal_selections] if item.deal_selections else None,
         })
 
-    # Calculate tax (10%)
-    tax = subtotal * 0.10
-    total = subtotal + tax
+    # Calculate tax based on restaurant VAT setting
+    tax = subtotal * (vat_rate / 100) if vat_enabled else 0.0
+    discount = float(order_data.discount_amount or 0.0)
+    total = max(0.0, subtotal + tax - discount)
 
     # Create order
     new_order = Order(
@@ -169,6 +183,8 @@ async def create_order(
         delivery_address=order_data.delivery_address,
         subtotal=subtotal,
         tax=tax,
+        discount_amount=discount,
+        discount_reason=order_data.discount_reason,
         total=total,
         special_instructions=order_data.special_instructions
     )
@@ -297,8 +313,15 @@ async def get_order(
         "delivery_address": getattr(order, "delivery_address", None),
         "subtotal": order.subtotal,
         "tax": order.tax,
+        "discount_amount": order.discount_amount,
+        "discount_reason": order.discount_reason,
         "total": order.total,
         "special_instructions": order.special_instructions,
+        "payment_method": order.payment_method,
+        "refund_amount": order.refund_amount,
+        "refund_method": order.refund_method,
+        "refund_reason": order.refund_reason,
+        "refunded_at": order.refunded_at,
         "items": order.items,
         "created_at": order.created_at,
         "updated_at": order.updated_at,
@@ -332,16 +355,19 @@ async def update_order_status(
             detail="Order not found"
         )
 
-    # Update status
-    order.status = status_update.status
-
-    # Save payment method when completing
+    # Save payment method whenever provided
     if status_update.payment_method:
         order.payment_method = status_update.payment_method
 
-    # Set timestamps based on status
-    if status_update.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+    # Auto-complete: when marked served WITH a payment method, advance to completed
+    if status_update.status == OrderStatus.SERVED and status_update.payment_method:
+        order.status = OrderStatus.COMPLETED
         order.completed_at = datetime.utcnow()
+        logger.info(f"Order {order.order_number} auto-completed on payment ({status_update.payment_method})")
+    else:
+        order.status = status_update.status
+        if status_update.status in [OrderStatus.COMPLETED, OrderStatus.CANCELLED]:
+            order.completed_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(order)
@@ -354,6 +380,42 @@ async def update_order_status(
 
     logger.info(f"Order {order.order_number} status updated to {status_update.status}")
 
+    return order
+
+
+@router.post("/orders/{order_id}/refund", response_model=OrderResponse)
+async def refund_order(
+    order_id: UUID,
+    refund_data: RefundRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Process a refund for a completed order."""
+    result = await db.execute(
+        select(Order)
+        .options(selectinload(Order.items))
+        .where(Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.refunded_at:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order already refunded")
+
+    if refund_data.refund_amount > order.total:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Refund amount exceeds order total ({order.total:.2f})")
+
+    order.refund_amount = refund_data.refund_amount
+    order.refund_method = refund_data.refund_method
+    order.refund_reason = refund_data.refund_reason
+    order.refunded_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(order)
+
+    logger.info(f"Order {order.order_number} refunded: {refund_data.refund_amount} via {refund_data.refund_method}")
     return order
 
 

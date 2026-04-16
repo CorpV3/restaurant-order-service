@@ -2,19 +2,32 @@
 Pydantic schemas for Order Service
 """
 from pydantic import BaseModel, Field, validator
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 from uuid import UUID
 from datetime import datetime
 from shared.models.enums import OrderStatus
 
 
 # Order Item Schemas
+class DealSelectionStep(BaseModel):
+    """One step's selection in a deal"""
+    step: int
+    label: str
+    item_id: Optional[str] = None        # single item UUID (qty=1)
+    item_name: Optional[str] = None
+    item_ids: Optional[List[str]] = None  # multiple items (qty>1)
+    item_names: Optional[List[str]] = None
+
+
 class OrderItemCreate(BaseModel):
     """Schema for creating an order item"""
     menu_item_id: UUID
     quantity: int = Field(ge=1, le=100)
     special_requests: Optional[str] = None
     contributor_name: Optional[str] = None  # For collaborative ordering
+    # Deal fields — only set when item is_deal=True
+    is_deal_item: bool = False
+    deal_selections: Optional[List[DealSelectionStep]] = None
 
 
 class OrderItemResponse(BaseModel):
@@ -27,6 +40,8 @@ class OrderItemResponse(BaseModel):
     item_image_url: Optional[str] = None
     quantity: int
     special_instructions: Optional[str]
+    is_deal_item: bool = False
+    deal_selections: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
 
     class Config:
@@ -49,6 +64,15 @@ class OrderCreate(BaseModel):
     total: Optional[str] = None
     status: Optional[str] = None
     special_instructions: Optional[str] = None
+    discount_amount: Optional[float] = 0.0
+    discount_reason: Optional[str] = None
+
+
+class RefundRequest(BaseModel):
+    """Schema for processing a refund"""
+    refund_amount: float = Field(gt=0)
+    refund_method: str = Field(pattern="^(cash|card)$")
+    refund_reason: Optional[str] = None
 
 
 class OrderUpdateStatus(BaseModel):
@@ -72,9 +96,15 @@ class OrderResponse(BaseModel):
     delivery_address: Optional[str] = None
     subtotal: float
     tax: float
+    discount_amount: float = 0.0
+    discount_reason: Optional[str] = None
     total: float
     special_instructions: Optional[str] = None
     payment_method: Optional[str] = None
+    refund_amount: Optional[float] = None
+    refund_method: Optional[str] = None
+    refund_reason: Optional[str] = None
+    refunded_at: Optional[datetime] = None
     items: List[OrderItemResponse] = []
     created_at: datetime
     updated_at: datetime

@@ -43,6 +43,16 @@ class Order(Base):
     # Special instructions
     special_instructions = Column(Text, nullable=True)
 
+    # Discount (manual offer applied by staff)
+    discount_amount = Column(Float, nullable=False, default=0.0)
+    discount_reason = Column(String(255), nullable=True)
+
+    # Refund
+    refund_amount = Column(Float, nullable=True)
+    refund_method = Column(String(20), nullable=True)   # 'cash', 'card'
+    refund_reason = Column(Text, nullable=True)
+    refunded_at = Column(DateTime, nullable=True)
+
     # Payment
     payment_method = Column(String(20), nullable=True)  # 'cash', 'card'
 
@@ -74,6 +84,10 @@ class OrderItem(Base):
 
     # Order details
     quantity = Column(Integer, nullable=False, default=1)
+
+    # Deal / combo fields
+    is_deal_item = Column(Boolean, default=False, nullable=False)
+    deal_selections = Column(JSONB, nullable=True)  # chosen sub-items per step
 
     # Special instructions
     special_instructions = Column(Text, nullable=True)
