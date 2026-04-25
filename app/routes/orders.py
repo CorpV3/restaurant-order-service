@@ -129,10 +129,13 @@ async def create_order(
     Create a new order (PUBLIC - no authentication required)
     Customers can place orders directly via QR code or table session
     """
-    # Fetch restaurant VAT settings
+    # Fetch restaurant settings (VAT + chef display)
     restaurant_data = await fetch_restaurant(order_data.restaurant_id)
     vat_enabled = restaurant_data.get("vat_enabled", True) if restaurant_data else True
     vat_rate = float(restaurant_data.get("vat_rate", 20.0)) if restaurant_data else 20.0
+    # When chef display is off, orders go straight to PREPARING (kitchen works from printed ticket)
+    chef_display_enabled = restaurant_data.get("chef_display_enabled", True) if restaurant_data else True
+    initial_status = OrderStatus.PENDING if chef_display_enabled else OrderStatus.PREPARING
 
     # Calculate order totals
     subtotal = 0.0
@@ -175,7 +178,7 @@ async def create_order(
         restaurant_id=order_data.restaurant_id,
         table_id=order_data.table_id,
         order_number=generate_order_number(),
-        status=OrderStatus.PENDING,
+        status=initial_status,
         order_type=order_data.order_type if order_data.order_type else OrderType.TABLE,
         customer_name=order_data.customer_name,
         customer_phone=order_data.customer_phone,
